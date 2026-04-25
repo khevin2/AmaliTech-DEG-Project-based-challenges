@@ -1,0 +1,12 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deployready-api:local
+    container_name: deployready-api
+    environment:
+      PORT: ${PORT:-3000}
+    ports:
+      - "3000:${PORT:-3000}"
+    restart: unless-stopped
