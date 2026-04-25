@@ -30,6 +30,7 @@ GitHub Actions
 AWS EC2 instance
   - Docker pulls ghcr.io/<owner>/<repo>:<commit-sha>
   - Existing deployready-api container is replaced
+  - Health check failure rolls back to the previous image
   - Container listens on PORT=3000
   - Host port 80 forwards to container port 3000
         |
@@ -152,7 +153,7 @@ Pipeline stages:
 1. Test: installs dependencies with `npm ci --prefix app` and runs `npm test --prefix app`.
 2. Build: builds the Docker image from `dev-ops/DeployReady`.
 3. Push: tags the image with the Git commit SHA and pushes it to GitHub Container Registry.
-4. Deploy: connects to EC2 over SSH, pulls the SHA-tagged image, replaces the old container, starts the new one, and verifies `/health`.
+4. Deploy: connects to EC2 over SSH, pulls the SHA-tagged image, replaces the old container, starts the new one, verifies `/health`, and rolls back to the previous image if the new container cannot start or is unhealthy.
 
 Published image format:
 
@@ -161,6 +162,20 @@ ghcr.io/<github-owner>/<repository>:<commit-sha>
 ```
 
 The workflow also pushes `latest` for convenience, but deployment uses the immutable commit SHA tag.
+
+### Bonus: Rollback on failed health check
+
+The deployment step captures the image used by the currently running `deployready-api` container before replacing it. After the new container starts, the workflow retries `GET /health` locally on the EC2 instance.
+
+If the new container cannot start or fails health checks, the workflow:
+
+1. Prints the last 100 log lines from the failed container.
+2. Stops and removes the failed container.
+3. Starts a replacement container from the previous image with the same name, port mapping, restart policy, and `PORT`.
+4. Verifies `/health` again.
+5. Fails the GitHub Actions run so the bad deployment is visible.
+
+Rollback requires a previous container image to exist locally on the EC2 instance. If there is no previous deployment, the workflow fails clearly instead of hiding the problem.
 
 ## Required GitHub Secrets
 
@@ -203,6 +218,8 @@ docker run -d \
 ```bash
 curl -fsS http://127.0.0.1/health
 ```
+
+If the container cannot start or the health check fails, GitHub Actions rolls the EC2 container back to the previous image and marks the workflow as failed.
 
 The EC2 security group should allow HTTP on port `80` from the internet and SSH on port `22` only from your current public IP address.
 
@@ -267,3 +284,5 @@ docker ps --filter name=deployready-api
 docker logs --tail 100 deployready-api
 curl -v http://127.0.0.1/health
 ```
+
+If GitHub Actions attempted a rollback, inspect the workflow logs for the failed container logs and the rollback result.

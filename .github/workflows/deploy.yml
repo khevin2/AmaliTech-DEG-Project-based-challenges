@@ -81,7 +81,7 @@ jobs:
           printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deployready_key
           printf '%s\n' "${{ secrets.EC2_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
 
-      # Pull the new image on EC2, replace the old container, and verify /health.
+      # Pull the new image on EC2, replace the old container, verify /health, and roll back on failure.
       - name: Deploy to EC2
         run: |
           ssh -i ~/.ssh/deployready_key \
@@ -93,19 +93,79 @@ jobs:
           CONTAINER_NAME='${{ env.CONTAINER_NAME }}'
           APP_PORT='${{ secrets.APP_PORT }}'
 
+          health_check() {
+            for attempt in $(seq 1 10); do
+              if curl -fsS http://127.0.0.1/health >/dev/null; then
+                return 0
+              fi
+              echo "Health check attempt ${attempt}/10 failed; retrying in 3 seconds..."
+              sleep 3
+            done
+            return 1
+          }
+
+          run_container() {
+            local image="$1"
+            docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              -p 80:"$APP_PORT" \
+              -e PORT="$APP_PORT" \
+              "$image"
+          }
+
+          rollback_previous() {
+            local reason="$1"
+            echo "$reason"
+            echo "Recent failed container logs:"
+            docker logs --tail 100 "$CONTAINER_NAME" 2>/dev/null || true
+
+            docker stop "$CONTAINER_NAME" 2>/dev/null || true
+            docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+            if [ -z "$PREVIOUS_IMAGE" ]; then
+              echo "Rollback failed: no previous image was available."
+              exit 1
+            fi
+
+            if ! docker image inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
+              echo "Rollback failed: previous image is not available locally: $PREVIOUS_IMAGE"
+              exit 1
+            fi
+
+            echo "Rolling back to previous image: $PREVIOUS_IMAGE"
+            run_container "$PREVIOUS_IMAGE"
+
+            if ! health_check; then
+              echo "Rollback container also failed health checks. Recent rollback logs:"
+              docker logs --tail 100 "$CONTAINER_NAME" 2>/dev/null || true
+              exit 1
+            fi
+
+            echo "Rollback succeeded. Failing the workflow because the new image was unhealthy."
+            exit 1
+          }
+
           printf '%s\n' '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_USERNAME }}' --password-stdin
           docker pull "$IMAGE"
+
+          PREVIOUS_IMAGE="$(docker inspect --format='{{.Config.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+          if [ -n "$PREVIOUS_IMAGE" ]; then
+            echo "Previous image detected: $PREVIOUS_IMAGE"
+          else
+            echo "No previous container image detected; rollback will not be available for this deployment."
+          fi
 
           docker stop "$CONTAINER_NAME" 2>/dev/null || true
           docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
-          docker run -d \
-            --name "$CONTAINER_NAME" \
-            --restart unless-stopped \
-            -p 80:"$APP_PORT" \
-            -e PORT="$APP_PORT" \
-            "$IMAGE"
+          if ! run_container "$IMAGE"; then
+            rollback_previous "New deployment failed: container could not be started."
+          fi
 
-          curl -fsS http://127.0.0.1/health >/dev/null
+          if ! health_check; then
+            rollback_previous "New deployment failed health checks."
+          fi
+
           docker image prune -f
           REMOTE

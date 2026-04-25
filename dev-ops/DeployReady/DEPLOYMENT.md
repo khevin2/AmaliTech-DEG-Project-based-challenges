@@ -141,6 +141,37 @@ docker run -d \
 
 The host listens on port `80`. The container listens on `PORT=3000`.
 
+## Rollback Behavior
+
+The GitHub Actions workflow includes the optional DeployReady rollback bonus.
+
+Before replacing the running container, the workflow records the image from the current `deployready-api` container:
+
+```bash
+docker inspect --format='{{.Config.Image}}' deployready-api
+```
+
+After the new image starts, the workflow retries:
+
+```bash
+curl -fsS http://127.0.0.1/health
+```
+
+If the new container cannot start or does not become healthy, the workflow prints the last 100 log lines from the failed container when available, removes it, and starts the previous image with the same container name, restart policy, port mapping, and `PORT`.
+
+Rollback succeeds only when a previous image is still available locally on the EC2 instance. On the first deployment there is no previous image, so a failed health check fails the workflow without rollback.
+
+To inspect a rollback from EC2:
+
+```bash
+docker ps --filter name=deployready-api
+docker inspect deployready-api --format '{{.Config.Image}}'
+docker logs --tail 100 deployready-api
+curl -fsS http://127.0.0.1/health
+```
+
+To inspect why rollback happened, open the failed GitHub Actions run and review the `Deploy to EC2` step logs. The workflow prints the failed container logs before it rolls back.
+
 ## Check Running Containers
 
 ```bash
