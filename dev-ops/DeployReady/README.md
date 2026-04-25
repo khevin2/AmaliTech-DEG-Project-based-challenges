@@ -1,141 +1,269 @@
-# DeployReady
+# DeployReady DevOps Challenge
 
-This challenge is designed to test your understanding of core DevOps practices: containerisation, automated pipelines, and cloud deployment.
+## Project Overview
 
----
+DeployReady is a DevOps-ready packaging and deployment setup for the Kora Analytics Node.js API in `app/`.
 
-## 1. Business Context
+The API exposes:
 
-**Client:** Kora Analytics
-**Industry:** SaaS — Data dashboards for logistics companies
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Returns service health status. |
+| GET | `/metrics` | Returns uptime, memory, and Node.js runtime information. |
+| POST | `/data` | Accepts and echoes a non-empty JSON payload. |
 
-### The Problem
+The application logic is intentionally left unchanged. This solution adds the operational layer around the app: deterministic dependency installation, containerization, local Docker Compose support, CI testing, image publishing, and EC2 deployment automation.
 
-Every time the Kora team wants to deploy a new version of their app, a developer manually SSHs into the server, pulls the code, and restarts the process by hand. There are no automated tests before a release and no way to tell if a deploy broke something until a customer complains.
+## Architecture Overview
 
-### Your Role
+```text
+Developer push to main
+        |
+        v
+GitHub Actions
+  - npm ci and npm test in app/
+  - Docker build from dev-ops/DeployReady
+  - Push image to GitHub Container Registry
+  - SSH into EC2
+        |
+        v
+AWS EC2 instance
+  - Docker pulls ghcr.io/<owner>/<repo>:<commit-sha>
+  - Existing deployready-api container is replaced
+  - Container listens on PORT=3000
+  - Host port 80 forwards to container port 3000
+        |
+        v
+GET http://<ec2-public-ip>/health
+```
 
-You are joining as their first DevOps engineer. The application code already works — your job is to **containerise it, automate the delivery pipeline, and get it running on a cloud platform** (AWS, GCP, Azure, or any other cloud provider you are familiar with).
+## Repository Layout
 
----
+```text
+dev-ops/DeployReady/
+  app/
+    index.js
+    index.test.js
+    package.json
+    package-lock.json
+  Dockerfile
+  .dockerignore
+  docker-compose.yml
+  .env.example
+  DEPLOYMENT.md
+  README.md
 
-## 2. The Application
+.github/workflows/deploy.yml
+```
 
-A simple Node.js API is provided in the [`app/`](./app/) directory. It has three endpoints:
+The GitHub Actions workflow is stored at the repository root because GitHub only discovers workflows from `.github/workflows`.
 
-| Method | Route      | Description                            |
-| ------ | ---------- | -------------------------------------- |
-| GET    | `/health`  | Returns `{ "status": "ok" }`           |
-| GET    | `/metrics` | Returns uptime and memory usage        |
-| POST   | `/data`    | Accepts a JSON body and echoes it back |
+## Local Setup
 
-Run it locally:
+Prerequisites:
+
+- Node.js 22 or a compatible recent Node.js version
+- npm
+
+Run the API locally:
 
 ```bash
-cd app
-npm install
+cd dev-ops/DeployReady/app
+npm ci
+npm test
 npm start
 ```
 
-Do not change the application logic. Your work is everything around it.
+The app reads `PORT` from the environment and defaults to `3000` when it is not set.
 
----
+PowerShell example:
 
-## 3. The Assignment
+```powershell
+cd dev-ops/DeployReady/app
+$env:PORT = "3000"
+npm start
+```
 
-### Part 1 — Containerise the App
+Health check:
 
-**Deliverables:** A `Dockerfile` and a `docker-compose.yml` in the root of your repository.
+```bash
+curl http://localhost:3000/health
+```
 
-**Dockerfile requirements:**
+Expected response:
 
-- The app must run inside a Docker container.
-- The container must accept a `PORT` environment variable.
-- The container must **not** run as the `root` user.
+```json
+{"status":"ok"}
+```
 
-**Docker Compose requirements:**
+## Docker Setup
 
-- Define the app as a service in `docker-compose.yml`.
-- Map port `3000` on the host to the container.
-- Pass the `PORT` variable via an `.env` file (include a `.env.example` with placeholder values).
-- Running the following must start a working API:
-  ```bash
-  docker compose up --build
-  ```
+Prerequisites:
 
----
+- Docker Engine
+- Docker Compose v2
 
-### Part 2 — Automate the Pipeline
+Docker Compose automatically reads variables from `.env` when the file exists. Create a local environment file from the committed example when you want to set the port explicitly:
 
-**Deliverable:** A `.github/workflows/deploy.yml` GitHub Actions workflow.
+```bash
+cd dev-ops/DeployReady
+cp .env.example .env
+```
 
-The pipeline must run these steps **in order** on every push to `main`:
+PowerShell equivalent:
 
-1. **Test** — Run `npm test`. If tests fail, the pipeline stops. Nothing gets deployed.
-2. **Build** — Build the Docker image and tag it with the Git commit SHA.
-3. **Push** — Push the image to a container registry (GitHub Container Registry, AWS ECR, GCR, ACR, or equivalent).
-4. **Deploy** — Pull the new image on your cloud server and restart the container.
+```powershell
+cd dev-ops/DeployReady
+Copy-Item .env.example .env
+```
 
-Additional requirements:
+Start the API with Docker Compose:
 
-- Secrets (SSH key, registry token) must be stored as **GitHub repository secrets** — never in the code.
-- Add a short comment above each step in the YAML explaining what it does.
+```bash
+docker compose up --build
+```
 
----
+Compose maps host port `3000` to the container port from `PORT` in `.env`. If `.env` is absent, Compose falls back to `PORT=3000` so a clean checkout can still start locally.
 
-### Part 3 — Deploy to the Cloud
+Test the container:
 
-**Deliverable:** A running service on a cloud platform and a short `DEPLOYMENT.md` explaining your setup.
+```bash
+curl http://localhost:3000/health
+```
 
-Use **AWS, GCP, Azure, or any other cloud provider you are familiar with**. Provision the following (via the cloud console is fine):
+Build the image directly:
 
-- A **virtual machine** (e.g. AWS EC2 `t2.micro`, GCP `e2-micro`, Azure B1s) with Docker installed.
-- A **firewall / security group** that allows:
-  - HTTP on port 80 from anywhere
-  - SSH on port 22 **from your IP only** — not open to the world
-- A **service account / IAM user or role** for the pipeline with only the permissions it needs.
+```bash
+docker build -t deployready-api:local .
+```
 
-At submission time, `GET http://<your-server-ip>/health` must return `{ "status": "ok" }`.
+Run the image directly:
 
-Document in `DEPLOYMENT.md`:
+```bash
+docker run --rm -p 3000:3000 -e PORT=3000 deployready-api:local
+```
 
-- Which cloud provider and service you used, and why
-- How you set up the virtual machine
-- How you installed Docker and pulled your image
-- How to check if the container is running
-- How to view the application logs
+## CI/CD Pipeline
 
----
+The workflow is defined in `.github/workflows/deploy.yml` and runs on every push to `main`.
 
-## 4. Bonus (Optional)
+Pipeline stages:
 
-Pick **one** of the following if you want to go further:
+1. Test: installs dependencies with `npm ci --prefix app` and runs `npm test --prefix app`.
+2. Build: builds the Docker image from `dev-ops/DeployReady`.
+3. Push: tags the image with the Git commit SHA and pushes it to GitHub Container Registry.
+4. Deploy: connects to EC2 over SSH, pulls the SHA-tagged image, replaces the old container, starts the new one, and verifies `/health`.
 
-- **Use Terraform** (or your cloud's IaC tool) to provision the VM and firewall rules instead of the console.
-- **Add a cloud monitoring alarm** (e.g. AWS CloudWatch, GCP Cloud Monitoring, Azure Monitor) that triggers if `/health` stops responding.
-- **Implement a rollback step** in the pipeline that re-deploys the previous image if the health check fails after deploy.
+Published image format:
 
-Describe what you added and why in your `DEPLOYMENT.md`.
+```text
+ghcr.io/<github-owner>/<repository>:<commit-sha>
+```
 
----
+The workflow also pushes `latest` for convenience, but deployment uses the immutable commit SHA tag.
 
-## 5. Submission Instructions
+## Required GitHub Secrets
 
-1. **Fork** this repository.
-2. Complete all three parts in your fork.
-3. **Replace this README** with your own documentation (architecture overview, setup steps, decisions made).
-4. Submit your repo link via the [online form](https://forms.cloud.microsoft/e/f3FF83LVz3).
+Configure these in GitHub under `Settings -> Secrets and variables -> Actions`.
 
----
+| Secret | Purpose |
+| --- | --- |
+| `EC2_HOST` | Public IP address or DNS name of the EC2 instance. |
+| `EC2_USER` | Linux user used for deployment, for example `deploy` or `ubuntu`. |
+| `EC2_SSH_KEY` | Private SSH key for the deployment user. |
+| `EC2_KNOWN_HOSTS` | Pinned SSH host key line for the EC2 host, generated with `ssh-keyscan -H <host>`. |
+| `GHCR_USERNAME` | GitHub username or organization account used by EC2 to pull from GHCR. |
+| `GHCR_TOKEN` | GitHub token with the minimum package read permission needed to pull the image from GHCR. |
+| `APP_PORT` | Container port used by the Node.js API. Use `3000` for this app. |
 
-## ⚠️ Pre-Submission Checklist
+The workflow uses the built-in `GITHUB_TOKEN` for publishing to GHCR with `packages: write` permission. No AWS access keys are required for this SSH-based deployment approach.
 
-- [ ] `docker compose up --build` starts the app locally
-- [ ] A `.env.example` file is committed (the real `.env` is not)
-- [ ] At least one successful pipeline run is visible in the GitHub Actions tab
-- [ ] `GET /health` on your cloud server's public IP returns 200
-- [ ] No secrets or `.pem` files committed to the repository
-- [ ] SSH port 22 is **not** open to the world (`0.0.0.0/0`)
-- [ ] `DEPLOYMENT.md` is present and covers the four points in Part 3
-- [ ] This README has been replaced with your own documentation
-- [ ] Commit history shows progress over time (not a single upload commit)
+## Deployment Approach
+
+This solution targets a single AWS EC2 instance running Docker.
+
+At deploy time, GitHub Actions:
+
+1. Authenticates to GHCR on the EC2 instance.
+2. Pulls the new image by commit SHA.
+3. Stops and removes the existing `deployready-api` container if it exists.
+4. Starts a replacement container with:
+
+```bash
+docker run -d \
+  --name deployready-api \
+  --restart unless-stopped \
+  -p 80:3000 \
+  -e PORT=3000 \
+  ghcr.io/<github-owner>/<repository>:<commit-sha>
+```
+
+5. Verifies the deployment with:
+
+```bash
+curl -fsS http://127.0.0.1/health
+```
+
+The EC2 security group should allow HTTP on port `80` from the internet and SSH on port `22` only from your current public IP address.
+
+## Security Decisions
+
+- The Docker container runs as the non-root `node` user.
+- The image is based on the lean `node:22-bookworm-slim` image.
+- Only production dependencies are installed in the runtime image.
+- `.dockerignore` excludes `.env`, private keys, logs, dependency folders, and build output.
+- The real `.env`, private SSH keys, `.pem` files, and tokens must never be committed.
+- GitHub Actions uses repository secrets for all deployment credentials.
+- The workflow pins the EC2 host key through `EC2_KNOWN_HOSTS` instead of disabling SSH host verification.
+- GitHub Actions permissions are limited to repository read access and package write access.
+- The EC2 deployment user should have only the access required to run Docker.
+- SSH must be restricted to your IP address in the EC2 security group.
+
+## Troubleshooting
+
+### `docker compose up --build` cannot find `.env`
+
+Create it from the example:
+
+```bash
+cp .env.example .env
+```
+
+### Port `3000` is already in use locally
+
+Stop the local process using port `3000`, or change the host-side port in `docker-compose.yml` for local testing only.
+
+### `npm ci` fails
+
+Make sure `app/package-lock.json` is committed and run the command from `dev-ops/DeployReady`:
+
+```bash
+npm ci --prefix app
+```
+
+### EC2 cannot pull from GHCR
+
+Check:
+
+- `GHCR_USERNAME` is correct.
+- `GHCR_TOKEN` has package read access.
+- The GHCR image visibility allows the token to read it.
+- The image name is lowercase and matches the workflow output.
+
+### SSH deployment fails
+
+Check:
+
+- `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`, and `EC2_KNOWN_HOSTS` are configured.
+- The EC2 security group allows SSH from your current public IP only.
+- The deployment user has access to Docker.
+
+### `/health` fails after deployment
+
+Check the container state and logs on EC2:
+
+```bash
+docker ps --filter name=deployready-api
+docker logs --tail 100 deployready-api
+curl -v http://127.0.0.1/health
+```

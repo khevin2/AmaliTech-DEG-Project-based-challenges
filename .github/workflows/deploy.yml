@@ -1,0 +1,111 @@
+name: DeployReady CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  APP_DIR: dev-ops/DeployReady
+  CONTAINER_NAME: deployready-api
+
+defaults:
+  run:
+    working-directory: dev-ops/DeployReady
+
+jobs:
+  deploy:
+    name: Test, build, publish, and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # Check out the repository so the workflow can access the challenge files.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install the Node.js runtime used for application tests.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/app/package-lock.json
+
+      # Install app dependencies from the lockfile before running tests.
+      - name: Install app dependencies
+        run: npm ci --prefix app
+
+      # Run the application test suite; deployment stops here if tests fail.
+      - name: Test Node.js API
+        run: npm test --prefix app
+
+      # Normalize the GHCR image name because container image names must be lowercase.
+      - name: Prepare image metadata
+        id: image
+        run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      # Authenticate to GitHub Container Registry using the workflow token.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the Docker image from the challenge root and tag it with the commit SHA.
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag "${IMAGE_NAME}:${GITHUB_SHA}" \
+            --tag "${IMAGE_NAME}:latest" \
+            .
+
+      # Push both the immutable SHA tag and the convenience latest tag to GHCR.
+      - name: Push Docker image
+        run: |
+          docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+          docker push "${IMAGE_NAME}:latest"
+
+      # Prepare a pinned SSH trust store and deployment key for the EC2 connection.
+      - name: Configure SSH access
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deployready_key
+          printf '%s\n' "${{ secrets.EC2_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      # Pull the new image on EC2, replace the old container, and verify /health.
+      - name: Deploy to EC2
+        run: |
+          ssh -i ~/.ssh/deployready_key \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            "bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          IMAGE='${{ steps.image.outputs.image_name }}:${{ github.sha }}'
+          CONTAINER_NAME='${{ env.CONTAINER_NAME }}'
+          APP_PORT='${{ secrets.APP_PORT }}'
+
+          printf '%s\n' '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_USERNAME }}' --password-stdin
+          docker pull "$IMAGE"
+
+          docker stop "$CONTAINER_NAME" 2>/dev/null || true
+          docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+          docker run -d \
+            --name "$CONTAINER_NAME" \
+            --restart unless-stopped \
+            -p 80:"$APP_PORT" \
+            -e PORT="$APP_PORT" \
+            "$IMAGE"
+
+          curl -fsS http://127.0.0.1/health >/dev/null
+          docker image prune -f
+          REMOTE
