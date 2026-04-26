@@ -16,6 +16,8 @@ The application logic is intentionally left unchanged. This solution adds the op
 
 ## Architecture Overview
 
+Editable architecture diagram: [DeployReady Architecture FigJam](https://www.figma.com/board/Rf2yopq6Sb7tjNQfluwduD/DeployReady-Architecture?node-id=0-1&p=f)
+
 ```text
 Developer push to main
         |
